@@ -22,6 +22,7 @@ simple_data_agent/
 ├── llm.py           # LLM 客户端封装（OpenAI 格式，可换 DeepSeek）
 ├── embeddings.py    # 文本向量化：OpenAIEmbedder 真语义向量 + LocalHashEmbedder 离线兜底
 ├── db.py            # 生成确定性示例数据库（电商销售，含趋势+异常）
+├── sql_exec.py      # SQL 执行器（mcp_server / tools / app 三处共用，统一跑 SQL 的逻辑）
 ├── table_rag.py     # 两阶段选表 + 选字段（BM25+Qdrant 混合召回 + RRF 融合 + LLM rerank 精排，:memory: 免起服务）
 ├── nl2sql.py        # NL2SQL 三段式 + 自检/反思循环（跑挂自动改 SQL 重试）
 ├── diagnose.py      # 诊断归因（pandas 量化 + LLM 叙述）
@@ -29,6 +30,7 @@ simple_data_agent/
 ├── mcp_server.py    # 真·MCP Server（FastMCP）：暴露 query_data / diagnose 工具
 ├── skills.py        # 技能系统：扫描 skills/*.md 并按问题路由
 ├── agent.py         # harness：BaseAgent / ReAct / Planning / Orchestrator
+├── app.py           # Streamlit 可视化界面（智能问数 + 诊断分析两个标签页，简历演示用）
 ├── main.py          # 命令行入口
 ├── skills/
 │   ├── data_query.md   # 智能问数技能手册
@@ -72,6 +74,6 @@ python main.py "上月哪个城市销售额最高？"
 
 ## 后续还能加（已规划，按需递进）
 - ✅ `nl2sql.py` 已加 **NL2SQL 自检/反思循环**：生成 SQL → 执行 → 报错则把错误回喂 LLM 改 SQL 再试（对齐 joyagent 的 self-correction）；没 key 自动跳过重试，离线零依赖不崩
-- ⬜ 加 **Streamlit 可视化界面**：把问数/诊断做成网页，简历演示更直观
+- ✅ 新增 **Streamlit 可视化界面**（`app.py`）：智能问数 + 诊断分析两个标签页，业务逻辑(run_query/run_diagnose)与界面分离便于单测；没 key 时界面照常打开并弹提示。SQL 执行抽成 `sql_exec.py` 由 mcp_server/tools/app 共用
 - ⬜ 加 **eval 评测集**：固定若干问题，量化"选表准确率 / SQL 可执行率"
 - ⬜ 加 **GitHub Actions CI**：push 时自动跑 import + 离线冒烟测试

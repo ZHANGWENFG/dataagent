@@ -16,20 +16,11 @@ import pandas as pd
 from mcp.server.fastmcp import FastMCP
 
 from db import build, DB_PATH
+from sql_exec import run_sql
 from nl2sql import nl2sql, nl2sql_self_correct
 from diagnose import analyze
 
 mcp = FastMCP("simple-data-agent")
-
-
-def _run_sql(sql: str) -> str:
-    """用 pandas 在示例库上跑 SQL，转成易读文本。"""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        df = pd.read_sql_query(sql, conn)
-        return df.to_string(index=False) if not df.empty else "（无数据）"
-    finally:
-        conn.close()
 
 
 @mcp.tool()
@@ -37,7 +28,7 @@ def query_data(question: str) -> str:
     """把自然语言问题转成 SQL 并在销售库上执行，返回查询结果。用于'查数据/问数'类问题。"""
     build()  # 确保示例库存在
     # 用带"自检/反思"的入口：SQL 跑挂了会自动让 LLM 改 SQL 重试
-    plan = nl2sql_self_correct(question, execute_fn=_run_sql)
+    plan = nl2sql_self_correct(question, execute_fn=run_sql)
     if plan["error"]:
         return f"[SQL]\n{plan['sql']}\n[执行出错] {plan['error']}"
     return f"[生成的SQL]\n{plan['sql']}\n[执行结果]\n{plan['result']}"
