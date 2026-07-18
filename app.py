@@ -51,37 +51,45 @@ def run_query(question: str, memory: "ConversationMemory" = None) -> dict:
     return result
 
 
-def run_diagnose(question: str, memory: "ConversationMemory" = None) -> dict:
-    """诊断分析：pandas 量化 + LLM 叙述，返回 {insights, conclusion, cache_hit}。"""
+def run_diagnose(question: str, memory: "ConversationMemory" = None,
+                stream: bool = False) -> dict:
+    """诊断分析：pandas 量化 + LLM 叙述，返回 {insights, conclusion, cache_hit}。
+    stream=True 时 conclusion 是"流式生成器"，供界面逐字展示（流式结果不入缓存）。"""
     build()
-    hit = default_cache.get(question)
-    if hit is not None:
-        hit["cache_hit"] = True
-        return hit
+    # 流式结果无法 JSON 缓存（是生成器），只在非流式时走缓存
+    if not stream:
+        hit = default_cache.get(question)
+        if hit is not None:
+            hit["cache_hit"] = True
+            return hit
     q = memory.augment(question) if memory else question
-    res = analyze(q)
+    res = analyze(q, stream=stream)
     result = {"insights": res["insights"], "conclusion": res["conclusion"], "cache_hit": False}
-    default_cache.put(question, result)
+    if not stream:
+        default_cache.put(question, result)
     return result
 
 
-def run_deep_search(question: str, memory: "ConversationMemory" = None) -> dict:
+def run_deep_search(question: str, memory: "ConversationMemory" = None,
+                    stream: bool = False) -> dict:
     """
     深度搜索：顺序多步推理闭环（拆解→逐步检索证据→反思→综合）。
     返回 {steps, evidence, answer, rounds, cache_hit}：
       - steps   ：每一步"子问题→工具→证据"记录
-      - answer  ：综合后的最终答案
+      - answer  ：综合后的最终答案（stream=True 时为流式生成器）
     """
     build()
-    hit = default_cache.get(question)
-    if hit is not None:
-        hit["cache_hit"] = True
-        return hit
+    if not stream:
+        hit = default_cache.get(question)
+        if hit is not None:
+            hit["cache_hit"] = True
+            return hit
     from deep_search import deep_search   # 懒加载，避免离线 import app 时连带触发重型依赖
     q = memory.augment(question) if memory else question
-    result = deep_search(q)
+    result = deep_search(q, stream=stream)
     result["cache_hit"] = False
-    default_cache.put(question, result)
+    if not stream:
+        default_cache.put(question, result)
     return result
 
 
@@ -145,13 +153,13 @@ def main():
         )
         if st.button("诊断", key="d_btn") and d.strip():
             with st.spinner("正在量化分析…"):
-                out = run_diagnose(d, memory=st.session_state.mem)
+                out = run_diagnose(d, memory=st.session_state.mem, stream=True)
             st.subheader("量化指标")
             st.write(out["insights"])
-            st.subheader("业务结论")
-            st.write(out["conclusion"])
+            st.subheader("业务结论（流式输出）")
+            conclusion_text = st.write_stream(out["conclusion"])   # 逐字吐出，返回完整文本
             st.session_state.mem.add("user", d)
-            st.session_state.mem.add("assistant", out["conclusion"] or "（无结论）")
+            st.session_state.mem.add("assistant", conclusion_text or "（无结论）")
 
     # 标签页 3：深度搜索（顺序多步推理闭环）
     with tab3:
@@ -169,10 +177,10 @@ def main():
                 st.markdown(f"**{i}. {step['sub']}**")
                 st.caption(f"→ 调用工具 `{step['tool']}`，参数：{step['arg']}")
                 st.text(step["result"])
-            st.subheader("综合答案")
-            st.write(out["answer"])
+            st.subheader("综合答案（流式输出）")
+            answer_text = st.write_stream(out["answer"])   # 逐字吐出，返回完整文本
             st.session_state.mem.add("user", s)
-            st.session_state.mem.add("assistant", out["answer"] or "（无答案）")
+            st.session_state.mem.add("assistant", answer_text or "（无答案）")
 
 
 if __name__ == "__main__":

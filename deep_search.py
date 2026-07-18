@@ -17,7 +17,7 @@ deep_search.py —— 深度搜索 / 顺序多步推理闭环（大白话版）
 """
 
 import re
-from llm import ask
+from llm import ask, ask_stream
 from tools import DataQueryTool, DiagnosticTool
 from config import LLM_API_KEY
 
@@ -94,14 +94,16 @@ def _reflect(query: str, evidence: str) -> str:
     return ask(f"原问题：{query}\n已有证据：\n{evidence}", system=sys, temperature=0.0)
 
 
-def _synthesize(query: str, evidence: str) -> str:
-    """第 4 步：综合。把所有证据拼成最终答案。"""
+def _synthesize(query: str, evidence: str, stream: bool = False):
+    """第 4 步：综合。把所有证据拼成最终答案。stream=True 时返回生成器（逐字吐出）。"""
     sys = "你是资深分析师。基于下面的证据，给出连贯、有依据的最终答案，关键结论要引用证据。"
+    if stream:
+        return ask_stream(f"原问题：{query}\n证据汇总：\n{evidence}", system=sys, temperature=0.2)
     return ask(f"原问题：{query}\n证据汇总：\n{evidence}", system=sys, temperature=0.2)
 
 
 def deep_search(query: str, run_tool=None, max_rounds: int = 3,
-                max_steps_per_round: int = 4) -> dict:
+                max_steps_per_round: int = 4, stream: bool = False) -> dict:
     """
     深度搜索主入口：顺序多步推理闭环。
     :param query: 用户复杂问题
@@ -149,5 +151,5 @@ def deep_search(query: str, run_tool=None, max_rounds: int = 3,
             break
         todo = more
 
-    answer = _synthesize(query, evidence)
+    answer = _synthesize(query, evidence, stream=stream)
     return {"steps": raw, "evidence": evidence, "answer": answer, "rounds": rounds}

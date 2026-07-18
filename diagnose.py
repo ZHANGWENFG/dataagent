@@ -10,7 +10,7 @@ diagnose.py —— 诊断分析 / 归因（大白话版）
 import sqlite3
 import pandas as pd
 from db import DB_PATH
-from llm import ask
+from llm import ask, ask_stream
 from kb import get_kb
 
 
@@ -26,10 +26,11 @@ def _load_monthly_sales() -> pd.DataFrame:
     return monthly
 
 
-def analyze(query: str) -> dict:
+def analyze(query: str, stream: bool = False) -> dict:
     """
     执行诊断分析，返回结构化洞察 + LLM 叙述。
     这里演示四种最常见的归因方法（和 joyagent 的 InsightTool 思路一致）。
+    stream=True 时，conclusion 改为"流式生成器"（供 Streamlit 逐字展示）。
     """
     monthly = _load_monthly_sales()
     vals = monthly["amount"].tolist()
@@ -65,10 +66,18 @@ def analyze(query: str) -> dict:
 
     # 最后让 LLM 把上面的数字讲成"人话结论"（先召回业务口径 SOP 注入，避免口径歧义）
     kb_context = get_kb().context_text(query)
-    narrative = ask(
+    narrative_prompt = (
         f"用户问题：{query}\n以下是自动算出的量化指标：\n{insights}\n"
         f"{kb_context}\n"
-        f"请给出一段业务诊断结论，指出最值得关注的异常和原因假设。",
-        system="你是资深业务分析师，结论要具体、可行动。", temperature=0.4)
+        f"请给出一段业务诊断结论，指出最值得关注的异常和原因假设。")
+    if stream:
+        # 流式：返回生成器，由上层逐字吐出
+        conclusion = ask_stream(
+            narrative_prompt,
+            system="你是资深业务分析师，结论要具体、可行动。", temperature=0.4)
+    else:
+        conclusion = ask(
+            narrative_prompt,
+            system="你是资深业务分析师，结论要具体、可行动。", temperature=0.4)
 
-    return {"insights": insights, "conclusion": narrative, "kb_context": kb_context}
+    return {"insights": insights, "conclusion": conclusion, "kb_context": kb_context}
