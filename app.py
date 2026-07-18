@@ -20,6 +20,7 @@ from sql_exec import run_sql
 from nl2sql import nl2sql_self_correct
 from diagnose import analyze
 from memory import ConversationMemory
+from cache import default_cache
 
 
 # ---------------- 业务逻辑（纯函数，可离线测试）----------------
@@ -27,38 +28,60 @@ def run_query(question: str, memory: "ConversationMemory" = None) -> dict:
     """
     智能问数：生成 SQL → 在示例库执行（自带自检/反思重试）→ 返回结构化结果。
     传 memory 时，会用历史对话增强问题，支持"那北京呢？"这种指代追问。
-    返回 {sql, result, error, retries}，上层直接展示。
+    返回 {sql, result, error, retries, cache_hit}，上层直接展示。
+    cache_hit=True 表示命中查询缓存，跳过了 LLM+SQL，直接返回上次结果。
     """
     build()  # 确保示例库存在
+    # —— 查询缓存：同样的问题第二次直接命中，省一次 LLM + SQL ——
+    hit = default_cache.get(question)
+    if hit is not None:
+        hit["cache_hit"] = True
+        return hit
     q = memory.augment(question) if memory else question
     plan = nl2sql_self_correct(q, execute_fn=run_sql)
-    return {
+    result = {
         "sql": plan["sql"],
         "result": plan["result"],
         "error": plan["error"],
         "retries": plan["retries"],
+        "cache_hit": False,
     }
+    default_cache.put(question, result)
+    return result
 
 
 def run_diagnose(question: str, memory: "ConversationMemory" = None) -> dict:
-    """诊断分析：pandas 量化 + LLM 叙述，返回 {insights, conclusion}。"""
+    """诊断分析：pandas 量化 + LLM 叙述，返回 {insights, conclusion, cache_hit}。"""
     build()
+    hit = default_cache.get(question)
+    if hit is not None:
+        hit["cache_hit"] = True
+        return hit
     q = memory.augment(question) if memory else question
     res = analyze(q)
-    return {"insights": res["insights"], "conclusion": res["conclusion"]}
+    result = {"insights": res["insights"], "conclusion": res["conclusion"], "cache_hit": False}
+    default_cache.put(question, result)
+    return result
 
 
 def run_deep_search(question: str, memory: "ConversationMemory" = None) -> dict:
     """
     深度搜索：顺序多步推理闭环（拆解→逐步检索证据→反思→综合）。
-    返回 {steps, evidence, answer, rounds}：
+    返回 {steps, evidence, answer, rounds, cache_hit}：
       - steps   ：每一步"子问题→工具→证据"记录
       - answer  ：综合后的最终答案
     """
     build()
+    hit = default_cache.get(question)
+    if hit is not None:
+        hit["cache_hit"] = True
+        return hit
     from deep_search import deep_search   # 懒加载，避免离线 import app 时连带触发重型依赖
     q = memory.augment(question) if memory else question
-    return deep_search(q)
+    result = deep_search(q)
+    result["cache_hit"] = False
+    default_cache.put(question, result)
+    return result
 
 
 # ---------------- 界面（只在 streamlit run 时执行）----------------
@@ -98,7 +121,9 @@ def main():
             if out["error"]:
                 st.error(f"执行出错（重试 {out['retries']} 次）：{out['error']}")
             else:
-                if out["retries"]:
+                if out["cache_hit"]:
+                    st.success("✅ 命中查询缓存，直接返回（省了一次 LLM + SQL）")
+                elif out["retries"]:
                     st.info(f"SQL 曾跑挂，已自检重试 {out['retries']} 次后跑通 ✅")
                 st.subheader("查询结果")
                 st.text(out["result"] or "（无数据）")
