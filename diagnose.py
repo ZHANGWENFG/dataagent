@@ -11,6 +11,7 @@ import sqlite3
 import pandas as pd
 from db import DB_PATH
 from llm import ask
+from kb import get_kb
 
 
 def _load_monthly_sales() -> pd.DataFrame:
@@ -62,10 +63,12 @@ def analyze(query: str) -> dict:
     corr = merged["amount"].corr(merged["quantity"])
     insights["销售额与销量相关性"] = round(float(corr), 3)
 
-    # 最后让 LLM 把上面的数字讲成"人话结论"
+    # 最后让 LLM 把上面的数字讲成"人话结论"（先召回业务口径 SOP 注入，避免口径歧义）
+    kb_context = get_kb().context_text(query)
     narrative = ask(
         f"用户问题：{query}\n以下是自动算出的量化指标：\n{insights}\n"
+        f"{kb_context}\n"
         f"请给出一段业务诊断结论，指出最值得关注的异常和原因假设。",
         system="你是资深业务分析师，结论要具体、可行动。", temperature=0.4)
 
-    return {"insights": insights, "conclusion": narrative}
+    return {"insights": insights, "conclusion": narrative, "kb_context": kb_context}

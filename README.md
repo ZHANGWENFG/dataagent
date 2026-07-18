@@ -11,6 +11,7 @@
 | 诊断分析 归因 | `diagnose.py` | 趋势/异常/周期/相关性量化 + LLM 讲成人话 |
 | 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + **Planning 并行扇出**(ThreadPoolExecutor) + **DeepSearch 顺序多步推理闭环** + Orchestrator 三级路由 + **多轮对话记忆** |
 | 查询缓存 | `cache.py` | 问题归一化→LRU→SQLite 持久化；相同/等价问题第二次直接命中，跳过 LLM+SQL（降本降延迟） |
+| 业务知识库问答(SOP 召回) | `kb.py` + `knowledge/` | 问数/诊断前先从知识库 md 召回业务口径 SOP（BM25+向量双路+RRF 融合），注入提示避免"销售额"口径歧义；对齐 joyagent plan_sop |
 | MCP + Skills 接入 | `tools.py` + `skills.py` + `mcp_server.py` | BaseTool 可插拔 + **真·MCP Server**（FastMCP 暴露 query_data/diagnose，stdio 真调用）+ SKILL.md 技能系统 |
 
 **砍掉了**：AWEL 图引擎、GraphRAG、微调 Hub、多数据库连接器、管理后台——这些对"看懂+简历"是负担。
@@ -34,6 +35,8 @@ simple_data_agent/
 ├── deep_search.py   # 深度搜索：顺序多步推理闭环（拆解→逐步检索证据→反思→综合），区别于 Planning 并行扇出
 ├── memory.py        # 多轮对话记忆：ConversationMemory（追加轮次 + 历史上下文注入，解决指代追问）
 ├── cache.py         # 查询缓存：QueryCache（归一化 key + LRU + SQLite 持久化，命中即跳过 LLM+SQL）
+├── kb.py            # 业务知识库问答：KnowledgeBase（BM25+向量双路+RRF 召回口径 SOP，对齐 joyagent plan_sop）
+├── knowledge/       # 业务口径知识库（md）：metrics.md(销售额/城市/渠道/会员) + diagnostic.md(异常/相关性/趋势)
 ├── app.py           # Streamlit 可视化界面（智能问数 + 诊断分析 + 深度搜索三个标签页，共用会话记忆）
 ├── eval.py          # 离线评测集：固定问题量化"选表准确率 / SQL 可执行率"
 ├── main.py          # 命令行入口
@@ -85,4 +88,5 @@ python main.py "上月哪个城市销售额最高？"
 - ✅ 新增 **DeepSearch 深度搜索**（`deep_search.py` + `agent.py` 的 `DeepSearchAgent` + `app.py` 第三个标签页）：顺序多步推理闭环——拆解子问题→逐步调工具拿证据→反思证据够不够→综合答案；区别于 PlanningAgent 的并行扇出，更贴近人做调研；Orchestrator 三级路由（深度/根因/综合→DeepSearch，分析→Planning，查数→ReAct）
 - ✅ 新增 **多轮对话记忆**（`memory.py` + `agent.py` Orchestrator 持有 `ConversationMemory` + `app.py` 三标签页共用 `st.session_state.mem` 并带"新对话"按钮）：新问题进来把"历史对话"拼成上下文注入，解决"那北京呢？"指代追问；`main.py` 加 `--chat` 交互多轮模式。面试常问"你的 Agent 有状态吗"——有
 - ✅ 新增 **查询缓存**（`cache.py` + `app.py` 三个纯函数接入 `default_cache`）：问题归一化（忽略大小写/标点/空白）作 key，LRU + SQLite 持久化；相同/等价问题第二次直接命中、跳过 LLM+SQL，界面显示"✅ 命中查询缓存"。降本降延迟，生产系统标配
-- ⬜ 计划：业务知识库问答(SOP 召回) / 流式输出（待逐个补上）
+- ✅ 新增 **业务知识库问答 / SOP 召回**（`kb.py` + `knowledge/*.md` + 注入 `nl2sql` 的 think/convert 与 `diagnose`）：问数/诊断前先从知识库召回业务口径 SOP（BM25+向量双路+RRF 融合），注入提示避免"销售额含不含退款"这类口径歧义；对齐 joyagent 的 plan_sop（已核验真有）。界面问数页展示"📚 命中业务口径"
+- ⬜ 计划：流式输出（待补上）

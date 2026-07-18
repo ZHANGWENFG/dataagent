@@ -14,6 +14,7 @@ nl2sql.py —— 自然语言转 SQL（大白话版）
 
 from llm import ask
 from table_rag import build_schema_prompt
+from kb import get_kb
 
 
 def rewrite(query: str) -> str:
@@ -22,19 +23,21 @@ def rewrite(query: str) -> str:
     return ask(f"原始问题：{query}\n请改写：", system=sys, temperature=0.3)
 
 
-def think(query: str, rewritten: str, schema_text: str) -> str:
+def think(query: str, rewritten: str, schema_text: str, kb_context: str = "") -> str:
     """第二段：思考（流式思维链）。让模型先讲清楚'打算怎么查'。"""
     sys = "你是数据分析师。基于下面的表结构，说出求解思路（查哪张表、按什么分组/过滤、用什么聚合），不要写最终 SQL。"
-    prompt = f"问题：{query}\n改写后：{rewritten}\n可用表结构：\n{schema_text}\n请说明分析思路："
+    prompt = (f"问题：{query}\n改写后：{rewritten}\n可用表结构：\n{schema_text}\n"
+              f"{kb_context}\n请说明分析思路：")
     return ask(prompt, system=sys, temperature=0.0)
 
 
-def convert(query: str, rewritten: str, thinking: str, schema_text: str, dialect: str = "sqlite") -> str:
+def convert(query: str, rewritten: str, thinking: str, schema_text: str,
+            kb_context: str = "", dialect: str = "sqlite") -> str:
     """第三段：生成 SQL。低温度保证稳定。返回纯 SQL 文本。"""
     sys = f"你是 {dialect} SQL 专家。只输出一条可执行的 SQL，不要解释、不要 markdown 代码块标记。"
     prompt = (
         f"问题：{query}\n改写：{rewritten}\n思路：{thinking}\n"
-        f"可用表结构：\n{schema_text}\n请生成 SQL："
+        f"可用表结构：\n{schema_text}\n{kb_context}\n请生成 SQL："
     )
     sql = ask(prompt, system=sys, temperature=0.0)
     return sql.strip().strip("`").replace("```sql", "").replace("```", "").strip()
@@ -47,10 +50,11 @@ def nl2sql(query: str) -> dict:
     （想要"生成即自检"的版本，请用 nl2sql_self_correct）
     """
     schema_text = build_schema_prompt(query)   # TableRAG 先选出相关表字段
+    kb_context = get_kb().context_text(query)   # 先召回业务口径 SOP，避免 SQL 口径歧义
     rewritten = rewrite(query)
-    thinking = think(query, rewritten, schema_text)
-    sql = convert(query, rewritten, thinking, schema_text)
-    return {"rewritten": rewritten, "thinking": thinking, "sql": sql}
+    thinking = think(query, rewritten, schema_text, kb_context)
+    sql = convert(query, rewritten, thinking, schema_text, kb_context)
+    return {"rewritten": rewritten, "thinking": thinking, "sql": sql, "kb_context": kb_context}
 
 
 def _fix_sql(query: str, schema_text: str, bad_sql: str, error: str,
@@ -87,13 +91,14 @@ def nl2sql_self_correct(query: str, execute_fn=None, max_retries: int = 2,
     can_fix = bool(LLM_API_KEY)          # 没 key 就没法让 LLM 改 SQL，跳过重试
 
     schema_text = build_schema_prompt(query)
+    kb_context = get_kb().context_text(query)   # 先召回业务口径 SOP，避免 SQL 口径歧义
     rewritten = rewrite(query)
-    thinking = think(query, rewritten, schema_text)
-    sql = convert(query, rewritten, thinking, schema_text, dialect)
+    thinking = think(query, rewritten, schema_text, kb_context)
+    sql = convert(query, rewritten, thinking, schema_text, kb_context, dialect)
 
     result, error, retries = None, None, 0
     if execute_fn is None:
-        return {"rewritten": rewritten, "thinking": thinking, "sql": sql,
+        return {"rewritten": rewritten, "thinking": thinking, "sql": sql, "kb_context": kb_context,
                 "executed": False, "result": None, "error": None, "retries": 0}
 
     try:
@@ -101,7 +106,7 @@ def nl2sql_self_correct(query: str, execute_fn=None, max_retries: int = 2,
     except Exception as e:
         error = str(e)
         if not can_fix:                  # 没 key，改不了，直接认栽
-            return {"rewritten": rewritten, "thinking": thinking, "sql": sql,
+            return {"rewritten": rewritten, "thinking": thinking, "sql": sql, "kb_context": kb_context,
                     "executed": True, "result": None, "error": error, "retries": 0}
         # 有 key：进入"报错→修正→再试"循环
         for _ in range(max_retries):
@@ -113,5 +118,5 @@ def nl2sql_self_correct(query: str, execute_fn=None, max_retries: int = 2,
                 break
             except Exception as e2:
                 error = str(e2)          # 记下最新的错，下一轮接着喂给 LLM
-    return {"rewritten": rewritten, "thinking": thinking, "sql": sql,
+    return {"rewritten": rewritten, "thinking": thinking, "sql": sql, "kb_context": kb_context,
             "executed": True, "result": result, "error": error, "retries": retries}

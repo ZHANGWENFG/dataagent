@@ -45,6 +45,7 @@ def run_query(question: str, memory: "ConversationMemory" = None) -> dict:
         "error": plan["error"],
         "retries": plan["retries"],
         "cache_hit": False,
+        "kb_context": plan.get("kb_context", ""),
     }
     default_cache.put(question, result)
     return result
@@ -125,6 +126,9 @@ def main():
                     st.success("✅ 命中查询缓存，直接返回（省了一次 LLM + SQL）")
                 elif out["retries"]:
                     st.info(f"SQL 曾跑挂，已自检重试 {out['retries']} 次后跑通 ✅")
+                if out.get("kb_context"):
+                    st.subheader("📚 命中业务口径（知识库 SOP）")
+                    st.caption(out["kb_context"])
                 st.subheader("查询结果")
                 st.text(out["result"] or "（无数据）")
             # 记入会话记忆，供下一轮指代追问（如"那北京呢？"）
