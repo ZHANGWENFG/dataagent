@@ -10,7 +10,7 @@
 | 智能问数 NL2SQL | `nl2sql.py` + `table_rag.py` + `embeddings.py` | **真·Qdrant 向量召回**两阶段选表选字段（`:memory:` 免起服务）+ LLM rerank + NL2SQL 三段式 |
 | 诊断分析 归因 | `diagnose.py` | 趋势/异常/周期/相关性量化 + LLM 讲成人话 |
 | 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + Planning/Executor + Orchestrator 路由 |
-| MCP + Skills 接入 | `tools.py` + `skills.py` | BaseTool 可插拔 + MCPTool 外部转发 + SKILL.md 技能系统 |
+| MCP + Skills 接入 | `tools.py` + `skills.py` + `mcp_server.py` | BaseTool 可插拔 + **真·MCP Server**（FastMCP 暴露 query_data/diagnose，stdio 真调用）+ SKILL.md 技能系统 |
 
 **砍掉了**：AWEL 图引擎、GraphRAG、微调 Hub、多数据库连接器、管理后台——这些对"看懂+简历"是负担。
 
@@ -25,7 +25,8 @@ simple_data_agent/
 ├── table_rag.py     # 两阶段选表 + 选字段（真·Qdrant 向量召回，:memory: 免起服务）
 ├── nl2sql.py        # NL2SQL 三段式
 ├── diagnose.py      # 诊断归因（pandas 量化 + LLM 叙述）
-├── tools.py         # 工具系统：BaseTool + 内置工具 + MCPTool
+├── tools.py         # 工具系统：BaseTool + 内置工具 + 真·MCP 客户端 + MCPTool
+├── mcp_server.py    # 真·MCP Server（FastMCP）：暴露 query_data / diagnose 工具
 ├── skills.py        # 技能系统：扫描 skills/*.md 并按问题路由
 ├── agent.py         # harness：BaseAgent / ReAct / Planning / Orchestrator
 ├── main.py          # 命令行入口
@@ -64,5 +65,5 @@ python main.py "上月哪个城市销售额最高？"
 ## 下一步可以加（简历加分项）
 
 - ✅ `table_rag.py` 已换成真·Qdrant 向量召回（`:memory:` 模式，OpenAIEmbedder 真语义向量 + 本地哈希兜底）—— 就是 joyagent 的原版 TableRAG 思想
-- `tools.py` 里起一个真实 MCP Server，让 `MCPTool` 真正打通
+- ✅ `tools.py` 已接**真·MCP Server**（`mcp_server.py`，FastMCP 暴露 query_data/diagnose，经 stdio 真调用；保留原 HTTP 转发 MCPTool 作对照）
 - `agent.py` 的 PlanningAgent 改成"并行执行子任务"（对标 joyagent 的 CountDownLatch 扇出）

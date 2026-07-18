@@ -8,12 +8,22 @@ Agent 不知道工具内部怎么干，只管"按名字调用 + 拿结果"。
 MCPTool 则演示"工具不在本地、通过 HTTP 转发到外部 MCP 服务"的接入方式。
 """
 
+import os
+import asyncio
 import sqlite3
 import requests
 from abc import ABC, abstractmethod
 from db import DB_PATH
 from nl2sql import nl2sql
 from diagnose import analyze
+
+# 真·MCP 客户端（装了 mcp 才可用；没装不影响本地工具与 HTTP 版 MCPTool）
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    _HAS_MCP = True
+except Exception:
+    _HAS_MCP = False
 
 
 # ---------------- 工具基类：所有工具都要长这样 ----------------
@@ -85,6 +95,39 @@ class MCPTool(BaseTool):
             return f"[MCP {self.name} 未连接] {e}（这是演示接入点，启动对应 MCP Server 即可生效）"
 
 
+# ---------------- 真·MCP 客户端工具：经 stdio 连真实 MCP Server ----------------
+class RealMCPClientTool(BaseTool):
+    """
+    真·MCP 客户端工具：经 stdio 连上 MCP Server，把调用转发过去拿结果。
+    对标 joyagent 的 McpTool（工具逻辑在外部 Server，本地只负责"连 + 调"）。
+    script_path 指向 mcp_server.py；运行时用 python 拉起子进程，走标准 MCP 协议通信。
+    """
+
+    def __init__(self, name: str, script_path: str, description: str = "真实 MCP 工具"):
+        self.name = name
+        self.description = description
+        self.script_path = script_path
+
+    async def _call(self, **kwargs) -> str:
+        # 可用环境变量 MCP_PYTHON 指定 python 解释器（默认 "python"）
+        command = os.getenv("MCP_PYTHON", "python")
+        server = StdioServerParameters(command=command, args=[self.script_path])
+        async with stdio_client(server) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(self.name, kwargs)
+                # 把 MCP 返回的内容块拼成字符串
+                return "\n".join(getattr(c, "text", str(c)) for c in result.content)
+
+    def run(self, **kwargs) -> str:
+        if not _HAS_MCP:
+            return "[MCP 客户端不可用] 请先 pip install mcp"
+        try:
+            return asyncio.run(self._call(**kwargs))
+        except Exception as e:
+            return f"[MCP {self.name} 调用失败] {e}（确认 mcp_server.py 可运行且已 pip install mcp）"
+
+
 # ---------------- 工具箱：统一管理本地 + MCP 工具 ----------------
 class ToolCollection:
     """对标 joyagent 的 ToolCollection：Agent 手里的'工具抽屉'。"""
@@ -98,6 +141,12 @@ class ToolCollection:
 
     def add_mcp(self, tool: MCPTool):
         self.mcp_tools[tool.name] = tool
+
+    def add_mcp_server(self, script_path: str):
+        """连上一个真实 MCP Server，把它暴露的 query_data / diagnose 注册成工具。"""
+        for name, desc in (("query_data", "MCP 版智能问数"),
+                           ("diagnose", "MCP 版诊断分析")):
+            self.add_mcp(RealMCPClientTool(name, script_path, desc))
 
     def get(self, name: str) -> BaseTool:
         return self.tools.get(name) or self.mcp_tools.get(name)
