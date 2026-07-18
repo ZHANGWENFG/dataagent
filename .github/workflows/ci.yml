@@ -1,0 +1,36 @@
+name: CI
+
+# 每次 push / PR 都跑：装依赖 -> 编译检查 -> 离线评测（无需 LLM key）
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  offline-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check (py_compile all .py)
+        run: |
+          python -m py_compile $(git ls-files '*.py')
+
+      - name: Import check (catch import-time errors)
+        run: |
+          python -c "import table_rag, nl2sql, diagnose, tools, agent, sql_exec, mcp_server, app, eval"
+
+      - name: Offline eval (no LLM key needed)
+        run: |
+          python eval.py

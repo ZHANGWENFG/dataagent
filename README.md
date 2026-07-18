@@ -77,4 +77,4 @@ python main.py "上月哪个城市销售额最高？"
 - ✅ `nl2sql.py` 已加 **NL2SQL 自检/反思循环**：生成 SQL → 执行 → 报错则把错误回喂 LLM 改 SQL 再试（对齐 joyagent 的 self-correction）；没 key 自动跳过重试，离线零依赖不崩
 - ✅ 新增 **Streamlit 可视化界面**（`app.py`）：智能问数 + 诊断分析两个标签页，业务逻辑(run_query/run_diagnose)与界面分离便于单测；没 key 时界面照常打开并弹提示。SQL 执行抽成 `sql_exec.py` 由 mcp_server/tools/app 共用
 - ✅ 新增 **离线评测集**（`eval.py`）：固定 7 道问数题，离线量化"选表准确率 / SQL 可执行率"（无需 LLM key）；设了 `OPENAI_API_KEY` 自动切换真实 NL2SQL 评测。本次实测 选表 7/7、可执行 7/7
-- ⬜ 加 **GitHub Actions CI**：push 时自动跑 import + 离线冒烟测试
+- ✅ 新增 **GitHub Actions CI**（`.github/workflows/ci.yml`）：push/PR 自动装依赖 → py_compile 语法检查 → 全模块 import 检查 → 跑 `eval.py` 离线评测（无需密钥），保证改动不破坏主链路
