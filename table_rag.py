@@ -226,7 +226,16 @@ class TableRAG:
         # 两路融合：RRF 把"两路都靠前"的表顶上来
         fused = _rrf([vec_rank, bm25_rank])
         ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)
-        selected = [name for name, _ in ranked[:top_k]]
+        # 融合之后，再让 LLM 精排一遍（没 key/失败则保持融合顺序）
+        items = [(name, _table_doc(name, SCHEMA_REGISTRY[name])) for name, _ in ranked]
+        ordered = self._llm_rerank(query, items)
+        # 取前 top_k；若 LLM 排得太少，用融合结果补满，避免漏表
+        selected = ordered[:top_k]
+        for name, _ in ranked:
+            if len(selected) >= top_k:
+                break
+            if name not in selected:
+                selected.append(name)
         return selected or list(SCHEMA_REGISTRY.keys())[:top_k]
 
     # ---------------- 阶段二：选字段 ----------------
@@ -247,13 +256,52 @@ class TableRAG:
                          if self._col_by_index[i][0] == table]
             fused = _rrf([vec_rank, bm25_rank])
             ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)
-            kept = [col for col, _ in ranked]
+            # 融合之后，再让 LLM 精排一遍（没 key/失败则保持融合顺序）
+            items = [(col, _column_doc(table, meta, col, cols[col]))
+                     for col, _ in ranked]
+            ordered = self._llm_rerank(query, items)
+            kept = ordered[:]
             # 主键永远带上，保证 SQL 能 JOIN
             pk = list(cols.keys())[0]
             if pk not in kept:
                 kept.insert(0, pk)
             result[table] = kept
         return result
+
+    # ---------------- 融合之后再过一层 LLM 精排 ----------------
+    def _llm_rerank(self, query: str, items: list) -> list:
+        """
+        融合（RRF）之后，再让 LLM 对候选做一遍精排，进一步纠正"语义误判"。
+        这是工业界混合检索的最后一环：向量+BM25 负责"捞得全"，LLM 负责"排得准"。
+        没配 LLM key、或 LLM 调用失败（离线/超时）时，原样返回融合排序，保证链路不崩。
+        :param items: [(候选id, 文本说明), ...] 已按融合分从高到低
+        :return: 重新排序后的候选id列表
+        """
+        try:
+            from config import LLM_API_KEY
+            if not LLM_API_KEY:
+                return [c[0] for c in items]            # 离线兜底：不精排
+            from llm import ask                          # 延迟导入，未装 openai 也不崩
+            numbered = "\n".join(
+                f"{i+1}. {cid}：{txt}" for i, (cid, txt) in enumerate(items))
+            prompt = (
+                f"用户问题：{query}\n\n"
+                f"以下是检索出的候选（已编号），请按与问题的相关度从高到低重新排序，\n"
+                f"只输出重排后的编号序列，用逗号分隔，不要任何解释：\n\n{numbered}"
+            )
+            out = ask(prompt, system="你是检索精排专家，只输出编号。")
+            order = [int(x) for x in re.findall(r"\d+", out)]   # 从回复里抠出编号
+            reordered = []
+            for idx in order:
+                if 1 <= idx <= len(items):
+                    reordered.append(items[idx - 1])            # 按模型给的顺序重排
+            seen = {id(it) for it in reordered}
+            for it in items:
+                if id(it) not in seen:
+                    reordered.append(it)                        # 模型漏排的补到末尾，不丢候选
+            return [c[0] for c in reordered]
+        except Exception:
+            return [c[0] for c in items]                        # 任何异常都退回融合排序
 
 
 # ---------------- 模块级简便函数（保持旧接口，方便 nl2sql 直接调用）----------------
