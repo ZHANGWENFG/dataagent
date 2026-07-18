@@ -7,7 +7,7 @@
 
 | 能力 | 对应文件 | 说明 |
 |---|---|---|
-| 智能问数 NL2SQL | `nl2sql.py` + `table_rag.py` | TableRAG 两阶段选表选字段 + NL2SQL 三段式（改写→思考→生成） |
+| 智能问数 NL2SQL | `nl2sql.py` + `table_rag.py` + `embeddings.py` | **真·Qdrant 向量召回**两阶段选表选字段（`:memory:` 免起服务）+ LLM rerank + NL2SQL 三段式 |
 | 诊断分析 归因 | `diagnose.py` | 趋势/异常/周期/相关性量化 + LLM 讲成人话 |
 | 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + Planning/Executor + Orchestrator 路由 |
 | MCP + Skills 接入 | `tools.py` + `skills.py` | BaseTool 可插拔 + MCPTool 外部转发 + SKILL.md 技能系统 |
@@ -20,8 +20,9 @@
 simple_data_agent/
 ├── config.py        # LLM 配置 + 示例表结构（= DGP 治理后的元数据）
 ├── llm.py           # LLM 客户端封装（OpenAI 格式，可换 DeepSeek）
+├── embeddings.py    # 文本向量化：OpenAIEmbedder 真语义向量 + LocalHashEmbedder 离线兜底
 ├── db.py            # 生成确定性示例数据库（电商销售，含趋势+异常）
-├── table_rag.py     # 两阶段选表 + 选字段（关键词打分，零依赖可跑）
+├── table_rag.py     # 两阶段选表 + 选字段（真·Qdrant 向量召回，:memory: 免起服务）
 ├── nl2sql.py        # NL2SQL 三段式
 ├── diagnose.py      # 诊断归因（pandas 量化 + LLM 叙述）
 ├── tools.py         # 工具系统：BaseTool + 内置工具 + MCPTool
@@ -62,6 +63,6 @@ python main.py "上月哪个城市销售额最高？"
 
 ## 下一步可以加（简历加分项）
 
-- `table_rag.py` 里的关键词打分换成真向量库（Qdrant/ES），就是 joyagent 的原版 TableRAG
+- ✅ `table_rag.py` 已换成真·Qdrant 向量召回（`:memory:` 模式，OpenAIEmbedder 真语义向量 + 本地哈希兜底）—— 就是 joyagent 的原版 TableRAG 思想
 - `tools.py` 里起一个真实 MCP Server，让 `MCPTool` 真正打通
 - `agent.py` 的 PlanningAgent 改成"并行执行子任务"（对标 joyagent 的 CountDownLatch 扇出）

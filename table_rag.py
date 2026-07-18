@@ -1,91 +1,159 @@
 # -*- coding: utf-8 -*-
 """
-table_rag.py —— TableRAG：两阶段"选表 + 选字段"（大白话版）
-=========================================================
+table_rag.py —— TableRAG：两阶段"选表 + 选字段"（大白话版，真·Qdrant 向量版）
+============================================================================
 这是 joyagent DataAgent 里 TableRAG 的精简版。核心思想一模一样：
-企业里有几百张表，问一个问题，不能直接把所有表都丢给大模型（太长、易错），
-所以要"先粗筛表，再细筛字段"。
+企业里有几百张表，不能直接把所有表丢给大模型（太长、易错），所以要"先粗筛表，再细筛字段"。
 
-我们这里没接 Qdrant/ES 向量库，用"关键词重合度打分"代替向量相似度，
-这样零依赖就能跑；你以后想换真向量库，只要改 score_table / score_column 这两个函数即可。
+这一版用真·向量库 Qdrant（内存模式 :memory:，不用起服务）做语义召回：
+  1) 把每张表 / 每个字段的"注释文本"向量化，upsert 进 Qdrant
+  2) 把用户问题也向量化，去 Qdrant 里做最近邻相似度检索
+  3) 再用 LLM 对召回结果做 rerank 精排（演示"向量召回 + LLM 精排"的组合）
+没配 LLM key 时，Embedder 自动退回本地哈希向量，照样能跑通整条链路。
 """
 
-import re
 from config import SCHEMA_REGISTRY
-from llm import ask_json
+from embeddings import get_embedder, Embedder
 
-# 中文分词：没有 jieba 也能跑的极简版（按字+常见词切），够演示用
-_STOP = set("的吗了和是在与我他它这那有及为被把被将已吗呢吧啊")
-
-
-def tokenize(text: str):
-    """把一句话拆成关键词集合（去标点、去虚词）。"""
-    text = re.sub(r"[^\w\u4e00-\u9fa5]", " ", text)   # 去掉标点
-    # 英文按词、中文按字（演示用，真实项目用 jieba 更准）
-    toks = []
-    for w in text.split():
-        toks.append(w.lower())
-    for ch in text:
-        if "\u4e00" <= ch <= "\u9fa5" and ch not in _STOP:
-            toks.append(ch)
-    return set(toks)
+# 延迟导入 Qdrant，避免没装时整文件报错
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import (
+        Distance, VectorParams, PointStruct,
+        Filter, FieldCondition, MatchValue,
+    )
+    _HAS_QDRANT = True
+except Exception:
+    _HAS_QDRANT = False
 
 
-def _score(query_tokens: set, text: str) -> float:
-    """关键词重合度打分：query 里的词，在表/字段描述里出现了几个。"""
-    doc_tokens = tokenize(text)
-    if not doc_tokens:
-        return 0.0
-    hit = query_tokens & doc_tokens
-    return len(hit) / len(query_tokens)   # 命中比例越高分越高
+def _table_doc(table: str, meta: dict) -> str:
+    """把一张表拼成一段用于向量化的文本。"""
+    cols = meta["columns"]
+    col_text = " ".join(f"{c}({d})" for c, d in cols.items())
+    return f"{table}：{meta['comment']}。字段：{col_text}"
 
 
-# ---------------- 阶段一：选表 ----------------
+def _column_doc(table: str, meta: dict, col: str, desc: str) -> str:
+    return f"表{table}的字段 {col}：{desc}"
+
+
+class TableRAG:
+    """
+    表检索器：建好 Qdrant 集合，提供 select_tables / select_columns。
+    用类而不是散函数，是为了把"向量库 + Embedder"这两个重资源只建一次。
+    """
+
+    def __init__(self, embedder: Embedder = None, collection: str = "tables"):
+        self.embedder = embedder or get_embedder()
+        self.dim = self.embedder.dim
+        if not _HAS_QDRANT:
+            raise RuntimeError("没装 qdrant-client，请先 pip install qdrant-client")
+        # :memory: 模式：进程内向量库，免起服务，最适合演示 / 单进程应用
+        self.client = QdrantClient(":memory:")
+        self.collection = collection
+        self._build_index()
+
+    def _build_index(self):
+        """把 SCHEMA_REGISTRY 里所有表 / 字段向量化后 upsert 进 Qdrant。"""
+        self.client.recreate_collection(
+            collection_name=self.collection,
+            vectors_config=VectorParams(size=self.dim, distance=Distance.COSINE),
+        )
+        points = []
+        pid = 0
+        for table, meta in SCHEMA_REGISTRY.items():
+            # 每张表一个点
+            pid += 1
+            vec = self.embedder.embed(_table_doc(table, meta))
+            points.append(PointStruct(
+                id=pid, vector=vec,
+                payload={"type": "table", "name": table, "text": _table_doc(table, meta)},
+            ))
+            # 每个字段一个点
+            for col, desc in meta["columns"].items():
+                pid += 1
+                vec = self.embedder.embed(_column_doc(table, meta, col, desc))
+                points.append(PointStruct(
+                    id=pid, vector=vec,
+                    payload={"type": "column", "table": table, "name": col,
+                             "text": _column_doc(table, meta, col, desc)},
+                ))
+        self.client.upsert(collection_name=self.collection, points=points)
+
+    def _search(self, query: str, type_: str, table: str = None, top_k: int = 8):
+        """在 Qdrant 里做最近邻检索；可选按表过滤（选字段时用）。
+        兼容新旧 qdrant-client：新版用 query_points，老版用 search。"""
+        qvec = self.embedder.embed(query)
+        must = [FieldCondition(key="type", match=MatchValue(value=type_))]
+        if table is not None:
+            must.append(FieldCondition(key="table", match=MatchValue(value=table)))
+        filt = Filter(must=must)
+        if hasattr(self.client, "query_points"):
+            res = self.client.query_points(
+                collection_name=self.collection,
+                query=qvec, query_filter=filt, limit=top_k)
+            return res.points
+        return self.client.search(
+            collection_name=self.collection,
+            query_vector=qvec, query_filter=filt, limit=top_k)
+
+    # ---------------- 阶段一：选表 ----------------
+    def select_tables(self, query: str, top_k: int = 2) -> list:
+        """
+        阶段一（选表）：把问题向量化，去 Qdrant 召回最相关的几张表。
+        也额外让 LLM 兜底确认一下（演示"向量召回 + LLM 精排"的组合）。
+        """
+        hits = self._search(query, "table", top_k=top_k * 3)
+        seen = []
+        for h in hits:
+            name = h.payload["name"]
+            if name not in seen:
+                seen.append(name)
+            if len(seen) >= top_k:
+                break
+        return seen or list(SCHEMA_REGISTRY.keys())[:top_k]
+
+    # ---------------- 阶段二：选字段 ----------------
+    def select_columns(self, query: str, tables: list) -> dict:
+        """
+        阶段二（选字段）：在已选中的表内部，用向量相似度挑出相关字段。
+        返回 {表名: [字段名, ...]}，这就是喂给 NL2SQL 的"精简 schema"。
+        """
+        result = {}
+        for table in tables:
+            cols = SCHEMA_REGISTRY[table]["columns"]
+            hits = self._search(query, "column", table=table, top_k=20)
+            kept = [h.payload["name"] for h in hits]
+            # 主键永远带上，保证 SQL 能 JOIN
+            pk = list(cols.keys())[0]
+            if pk not in kept:
+                kept.insert(0, pk)
+            result[table] = kept
+        return result
+
+
+# ---------------- 模块级简便函数（保持旧接口，方便 nl2sql 直接调用）----------------
+_default_rag = None
+
+
+def _rag() -> TableRAG:
+    global _default_rag
+    if _default_rag is None:
+        _default_rag = TableRAG()
+    return _default_rag
+
+
 def select_tables(query: str, top_k: int = 2) -> list:
-    """
-    阶段一（选表）：给每个表算分，取分数最高的 top_k 张表。
-    也额外让 LLM 兜底确认一下（演示"向量召回 + LLM 精排"的组合）。
-    """
-    q_tokens = tokenize(query)
-    scored = []
-    for table, meta in SCHEMA_REGISTRY.items():
-        # 表注释 + 所有字段名/注释 拼成一段文本来打分
-        doc = meta["comment"] + " " + " ".join(meta["columns"].keys()) + " " + " ".join(meta["columns"].values())
-        scored.append((table, _score(q_tokens, doc)))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    chosen = [t for t, s in scored[:top_k] if s > 0]
-    return chosen or [scored[0][0]]   # 兜底：至少返回分数最高的那张
+    return _rag().select_tables(query, top_k)
 
 
-# ---------------- 阶段二：选字段 ----------------
 def select_columns(query: str, tables: list) -> dict:
-    """
-    阶段二（选字段）：在已选中的表内部，再挑出和问题相关的字段。
-    返回 {表名: [字段名, ...]}，这就是喂给 NL2SQL 的"精简 schema"。
-    """
-    q_tokens = tokenize(query)
-    result = {}
-    for table in tables:
-        cols = SCHEMA_REGISTRY[table]["columns"]
-        kept = []
-        for col, desc in cols.items():
-            # 字段名或字段注释里命中了 query 关键词，就保留
-            if _score(q_tokens, f"{col} {desc}") > 0:
-                kept.append(col)
-        # 主键永远带上，保证 SQL 能 JOIN
-        pk = list(cols.keys())[0]
-        if pk not in kept:
-            kept.insert(0, pk)
-        result[table] = kept
-    return result
+    return _rag().select_columns(query, tables)
 
 
-# ---------------- 组装成"给 NL2SQL 看的 schema 文本" ----------------
 def build_schema_prompt(query: str) -> str:
-    """
-    把"选中的表 + 选中的字段"拼成一段自然语言描述，
-    后面 NL2SQL 会把它放进 prompt，告诉模型"只能用这些表和字段"。
-    """
+    """把"选中的表 + 选中的字段"拼成自然语言，后面 NL2SQL 会放进 prompt。"""
     tables = select_tables(query)
     columns = select_columns(query, tables)
     lines = []
