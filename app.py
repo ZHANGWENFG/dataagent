@@ -2,11 +2,11 @@
 """
 app.py —— Streamlit 可视化界面（大白话版）
 =======================================
-把"智能问数"和"诊断分析"两个核心能力做成网页，简历演示一眼就懂。
+把"智能问数 / 诊断分析 / 深度搜索"三个核心能力做成网页，简历演示一眼就懂。
 设计要点：
-  · 业务逻辑（run_query / run_diagnose）抽成纯函数，方便离线单测，不放进 UI 里；
-  · 只有 main() 里才调用 st.* 渲染界面，所以 `import app` 不会触发 Streamlit 运行时，
-    离线冒烟测试直接调 run_query/run_diagnose 即可；
+  · 业务逻辑（run_query / run_diagnose / run_deep_search）抽成纯函数，方便离线单测；
+  · 三个标签页共用一份会话记忆（st.session_state.mem），支持跨轮指代追问；
+  · 只有 main() 里才调用 st.* 渲染界面，所以 `import app` 不会触发 Streamlit 运行时；
   · 没配 OPENAI_API_KEY 时，界面顶部弹黄条提示，但界面照常能打开（不会崩）。
 运行：pip install streamlit && streamlit run app.py
 """
@@ -19,16 +19,19 @@ from db import build
 from sql_exec import run_sql
 from nl2sql import nl2sql_self_correct
 from diagnose import analyze
+from memory import ConversationMemory
 
 
 # ---------------- 业务逻辑（纯函数，可离线测试）----------------
-def run_query(question: str) -> dict:
+def run_query(question: str, memory: "ConversationMemory" = None) -> dict:
     """
     智能问数：生成 SQL → 在示例库执行（自带自检/反思重试）→ 返回结构化结果。
+    传 memory 时，会用历史对话增强问题，支持"那北京呢？"这种指代追问。
     返回 {sql, result, error, retries}，上层直接展示。
     """
     build()  # 确保示例库存在
-    plan = nl2sql_self_correct(question, execute_fn=run_sql)
+    q = memory.augment(question) if memory else question
+    plan = nl2sql_self_correct(q, execute_fn=run_sql)
     return {
         "sql": plan["sql"],
         "result": plan["result"],
@@ -37,14 +40,15 @@ def run_query(question: str) -> dict:
     }
 
 
-def run_diagnose(question: str) -> dict:
+def run_diagnose(question: str, memory: "ConversationMemory" = None) -> dict:
     """诊断分析：pandas 量化 + LLM 叙述，返回 {insights, conclusion}。"""
     build()
-    res = analyze(question)
+    q = memory.augment(question) if memory else question
+    res = analyze(q)
     return {"insights": res["insights"], "conclusion": res["conclusion"]}
 
 
-def run_deep_search(question: str) -> dict:
+def run_deep_search(question: str, memory: "ConversationMemory" = None) -> dict:
     """
     深度搜索：顺序多步推理闭环（拆解→逐步检索证据→反思→综合）。
     返回 {steps, evidence, answer, rounds}：
@@ -53,7 +57,8 @@ def run_deep_search(question: str) -> dict:
     """
     build()
     from deep_search import deep_search   # 懒加载，避免离线 import app 时连带触发重型依赖
-    return deep_search(question)
+    q = memory.augment(question) if memory else question
+    return deep_search(q)
 
 
 # ---------------- 界面（只在 streamlit run 时执行）----------------
@@ -61,12 +66,19 @@ def main():
     st.set_page_config(page_title="simple_data_agent 演示", layout="wide")
     st.title("📊 simple_data_agent · 纯 Python 智能问数 / 诊断演示")
 
+    # 跨轮会话记忆：存在 st.session_state，三个标签页共用一份（像同一个聊天会话）
+    if "mem" not in st.session_state:
+        st.session_state.mem = ConversationMemory()
     # 没配 key 时给个醒目但不阻塞的提示
     if not os.getenv("OPENAI_API_KEY"):
         st.warning(
             "⚠️ 未检测到 OPENAI_API_KEY：界面可正常打开，但问数/诊断需要大模型才能出结果。"
             "运行前请先 `export OPENAI_API_KEY=xxx`。"
         )
+    # 清空记忆按钮（新一轮调研用）
+    if st.button("🧹 新对话", key="reset_mem"):
+        st.session_state.mem.reset()
+        st.success("已清空对话记忆，开启新一轮。")
 
     tab1, tab2, tab3 = st.tabs(["🔎 智能问数 (NL2SQL)", "🩺 诊断分析", "🧠 深度搜索 (DeepSearch)"])
 
@@ -80,7 +92,7 @@ def main():
         )
         if st.button("查询", key="q_btn") and q.strip():
             with st.spinner("正在生成 SQL 并执行…"):
-                out = run_query(q)
+                out = run_query(q, memory=st.session_state.mem)
             st.subheader("生成的 SQL")
             st.code(out["sql"], language="sql")
             if out["error"]:
@@ -90,6 +102,9 @@ def main():
                     st.info(f"SQL 曾跑挂，已自检重试 {out['retries']} 次后跑通 ✅")
                 st.subheader("查询结果")
                 st.text(out["result"] or "（无数据）")
+            # 记入会话记忆，供下一轮指代追问（如"那北京呢？"）
+            st.session_state.mem.add("user", q)
+            st.session_state.mem.add("assistant", out["result"] or out["error"] or "（无结果）")
 
     # 标签页 2：诊断分析
     with tab2:
@@ -101,11 +116,13 @@ def main():
         )
         if st.button("诊断", key="d_btn") and d.strip():
             with st.spinner("正在量化分析…"):
-                out = run_diagnose(d)
+                out = run_diagnose(d, memory=st.session_state.mem)
             st.subheader("量化指标")
             st.write(out["insights"])
             st.subheader("业务结论")
             st.write(out["conclusion"])
+            st.session_state.mem.add("user", d)
+            st.session_state.mem.add("assistant", out["conclusion"] or "（无结论）")
 
     # 标签页 3：深度搜索（顺序多步推理闭环）
     with tab3:
@@ -117,7 +134,7 @@ def main():
         )
         if st.button("深度搜索", key="s_btn") and s.strip():
             with st.spinner("正在拆解并逐步检索证据…"):
-                out = run_deep_search(s)
+                out = run_deep_search(s, memory=st.session_state.mem)
             st.subheader(f"检索过程（共 {len(out['steps'])} 步，{out['rounds']} 轮）")
             for i, step in enumerate(out["steps"], 1):
                 st.markdown(f"**{i}. {step['sub']}**")
@@ -125,6 +142,8 @@ def main():
                 st.text(step["result"])
             st.subheader("综合答案")
             st.write(out["answer"])
+            st.session_state.mem.add("user", s)
+            st.session_state.mem.add("assistant", out["answer"] or "（无答案）")
 
 
 if __name__ == "__main__":

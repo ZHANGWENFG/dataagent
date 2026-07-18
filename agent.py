@@ -17,6 +17,7 @@ from llm import ask
 from tools import ToolCollection
 from skills import SKILLS, pick_skill
 from deep_search import deep_search
+from memory import ConversationMemory
 
 
 class BaseAgent:
@@ -144,17 +145,21 @@ class Orchestrator:
     总调度（对标 joyagent 的 AgentHandlerFactory）：
     1) 先按 Skill 路由，把相关技能说明注入上下文（这就是'技能系统'生效的地方）
     2) 再按问题类型选 Agent 模式：深度/根因→DeepSearch，分析→Planning，查数→ReAct
+    3) 持有一份跨轮会话记忆，新问题进来时把"历史对话"注入，做指代消解（多轮对话）
     """
 
     def __init__(self):
         self.tools = ToolCollection()
+        self.memory = ConversationMemory()     # 跨轮记忆：随时能接"那北京呢？"这种追问
 
-    def handle(self, query: str) -> str:
+    def handle(self, query: str, memory: "ConversationMemory" = None) -> str:
+        mem = memory if memory is not None else self.memory
+
         # —— 技能路由：选一份 SKILL.md 注入（可选）——
         skill = pick_skill(query, SKILLS)
         skill_hint = f"\n[参考技能]\n{skill}\n" if skill else ""
 
-        # —— 模式选择：三级路由 ——
+        # —— 模式选择：三级路由（基于原始 query，不受历史注入影响）——
         if any(k in query for k in ["深度", "根因", "综合", "调研"]):
             agent = DeepSearchAgent(self.tools)
             mode = "DeepSearch"
@@ -165,6 +170,12 @@ class Orchestrator:
             agent = ReActAgent(self.tools)
             mode = "ReAct"
 
-        print(f"🧭 调度模式：{mode} ｜ 命中技能：{skill[:20] if skill else '无'}")
-        answer = agent.run(query + skill_hint)
+        # —— 注入历史对话，做指代消解 ——
+        augmented = mem.augment(query) + skill_hint
+        print(f"🧭 调度模式：{mode} ｜ 命中技能：{skill[:20] if skill else '无'} ｜ 历史轮次：{len(mem.turns) // 2}")
+        answer = agent.run(augmented)
+
+        # 记录本轮，供下一轮指代消解使用
+        mem.add("user", query)
+        mem.add("assistant", answer)
         return answer
