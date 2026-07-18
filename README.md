@@ -31,6 +31,7 @@ simple_data_agent/
 ├── skills.py        # 技能系统：扫描 skills/*.md 并按问题路由
 ├── agent.py         # harness：BaseAgent / ReAct / Planning / Orchestrator
 ├── app.py           # Streamlit 可视化界面（智能问数 + 诊断分析两个标签页，简历演示用）
+├── eval.py          # 离线评测集：固定问题量化"选表准确率 / SQL 可执行率"
 ├── main.py          # 命令行入口
 ├── skills/
 │   ├── data_query.md   # 智能问数技能手册
@@ -75,5 +76,5 @@ python main.py "上月哪个城市销售额最高？"
 ## 后续还能加（已规划，按需递进）
 - ✅ `nl2sql.py` 已加 **NL2SQL 自检/反思循环**：生成 SQL → 执行 → 报错则把错误回喂 LLM 改 SQL 再试（对齐 joyagent 的 self-correction）；没 key 自动跳过重试，离线零依赖不崩
 - ✅ 新增 **Streamlit 可视化界面**（`app.py`）：智能问数 + 诊断分析两个标签页，业务逻辑(run_query/run_diagnose)与界面分离便于单测；没 key 时界面照常打开并弹提示。SQL 执行抽成 `sql_exec.py` 由 mcp_server/tools/app 共用
-- ⬜ 加 **eval 评测集**：固定若干问题，量化"选表准确率 / SQL 可执行率"
+- ✅ 新增 **离线评测集**（`eval.py`）：固定 7 道问数题，离线量化"选表准确率 / SQL 可执行率"（无需 LLM key）；设了 `OPENAI_API_KEY` 自动切换真实 NL2SQL 评测。本次实测 选表 7/7、可执行 7/7
 - ⬜ 加 **GitHub Actions CI**：push 时自动跑 import + 离线冒烟测试
