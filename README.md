@@ -9,7 +9,7 @@
 |---|---|---|
 | 智能问数 NL2SQL | `nl2sql.py` + `table_rag.py` + `embeddings.py` | **真·Qdrant 向量召回**两阶段选表选字段（`:memory:` 免起服务）+ LLM rerank + NL2SQL 三段式 |
 | 诊断分析 归因 | `diagnose.py` | 趋势/异常/周期/相关性量化 + LLM 讲成人话 |
-| 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + Planning/Executor + Orchestrator 路由 |
+| 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + **Planning 并行扇出**(ThreadPoolExecutor) + Orchestrator 路由 |
 | MCP + Skills 接入 | `tools.py` + `skills.py` + `mcp_server.py` | BaseTool 可插拔 + **真·MCP Server**（FastMCP 暴露 query_data/diagnose，stdio 真调用）+ SKILL.md 技能系统 |
 
 **砍掉了**：AWEL 图引擎、GraphRAG、微调 Hub、多数据库连接器、管理后台——这些对"看懂+简历"是负担。
@@ -66,4 +66,4 @@ python main.py "上月哪个城市销售额最高？"
 
 - ✅ `table_rag.py` 已换成真·Qdrant 向量召回（`:memory:` 模式，OpenAIEmbedder 真语义向量 + 本地哈希兜底）—— 就是 joyagent 的原版 TableRAG 思想
 - ✅ `tools.py` 已接**真·MCP Server**（`mcp_server.py`，FastMCP 暴露 query_data/diagnose，经 stdio 真调用；保留原 HTTP 转发 MCPTool 作对照）
-- `agent.py` 的 PlanningAgent 改成"并行执行子任务"（对标 joyagent 的 CountDownLatch 扇出）
+- ✅ `agent.py` 的 PlanningAgent 已改成**并行执行子任务**（ThreadPoolExecutor 扇出 + as_completed 合并，对标 joyagent 的 CountDownLatch 扇出）

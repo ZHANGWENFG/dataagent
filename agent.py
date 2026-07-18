@@ -12,6 +12,7 @@ agent.py —— 多 Agent 编排 harness（大白话版）
 """
 
 import re
+import concurrent.futures
 from llm import ask
 from tools import ToolCollection
 from skills import SKILLS, pick_skill
@@ -29,16 +30,20 @@ class BaseAgent:
         self.memory = []          # 记忆：[{role, content}]
         self.max_steps = max_steps
 
-    def _think(self, query: str) -> str:
+    def _think(self, query: str, memory: list = None) -> str:
         """让 LLM 决定'下一步调什么工具'。这里用最简单的文本协议：
-        模型如果回 'CALL:工具名|参数'，就认为是调工具；否则当作最终答案。"""
+        模型如果回 'CALL:工具名|参数'，就认为是调工具；否则当作最终答案。
+        memory 可传入独立的历史列表（子步骤并行时各用各的，互不串）。"""
+        memory = memory if memory is not None else self.memory
         tool_list = self.tools.describe_for_llm()
         sys = ("你是调度器。可用工具：\n" + tool_list +
                "\n如需调工具，只回复 CALL:工具名|参数 ；否则直接给最终答案。")
-        return ask(f"历史：{self.memory}\n当前问题：{query}", system=sys, temperature=0.0)
+        return ask(f"历史：{memory}\n当前问题：{query}", system=sys, temperature=0.0)
 
-    def _act(self, decision: str, query: str) -> str:
-        """解析模型决策：要调工具就调，拿结果写回记忆。"""
+    def _act(self, decision: str, query: str, memory: list = None) -> str:
+        """解析模型决策：要调工具就调，拿结果写回记忆。
+        memory 可传入独立的历史列表（子步骤并行时各用各的，互不串）。"""
+        memory = memory if memory is not None else self.memory
         m = re.match(r"CALL:(\w+)\|(.*)", decision.strip())
         if m:
             name, arg = m.group(1), m.group(2)
@@ -46,10 +51,10 @@ class BaseAgent:
             if not tool:
                 return f"未知工具：{name}"
             result = tool.run(query=arg) if "query" in tool.params else tool.run()
-            self.memory.append({"role": "tool", "content": f"{name} 返回：{result}"})
+            memory.append({"role": "tool", "content": f"{name} 返回：{result}"})
             return result
         # 没让调工具 → 这就是最终答案
-        self.memory.append({"role": "assistant", "content": decision})
+        memory.append({"role": "assistant", "content": decision})
         return decision
 
     def run(self, query: str) -> str:
@@ -70,9 +75,22 @@ class ReActAgent(BaseAgent):
 
 class PlanningAgent(BaseAgent):
     """
-    Plan-and-Execute 模式：先把任务拆成几步计划，再逐步执行（每步仍可调工具）。
-    对标 joyagent 的 PlanningAgent + ExecutorAgent 组合，这里用顺序执行演示思想。
+    Plan-and-Execute 模式：先把任务拆成几步计划，再并行执行各子步，
+    最后汇总（对标 joyagent 的 PlanningAgent + ExecutorAgent 动态扇出）。
+    并行用 ThreadPoolExecutor：多个子任务同时跑（像 joyagent 的 CountDownLatch 扇出），
+    谁先完成先收集，全部到齐后再合并给"总结者"出最终答案。
     """
+
+    def _run_step(self, i: int, step: str, query: str) -> str:
+        """单个子步骤：独立 ReAct 循环，用"自己的"记忆，互不干扰。"""
+        sub = f"第{i}步：{step}（原目标：{query}）"
+        mem = [{"role": "user", "content": sub}]
+        for _ in range(self.max_steps):
+            decision = self._think(sub, memory=mem)
+            out = self._act(decision, sub, memory=mem)
+            if not decision.strip().startswith("CALL:"):
+                return out
+        return "⚠️ 子步骤达到最大步数仍未得出结论"
 
     def run(self, query: str) -> str:
         self.memory.append({"role": "user", "content": query})
@@ -81,13 +99,27 @@ class PlanningAgent(BaseAgent):
                    system="你是规划师，只输出步骤列表，每步一行，不要执行。",
                    temperature=0.0)
         self.memory.append({"role": "assistant", "content": f"[计划]\n{plan}"})
-        # 2) 执行：把每一步当作子问题，交给 ReAct 式循环逐个解决
         steps = [s for s in plan.splitlines() if s.strip() and not s.strip().startswith(("[", "#", "计划"))]
-        for i, step in enumerate(steps, 1):
-            sub = f"第{i}步：{step}（原目标：{query}）"
-            decision = self._think(sub)
-            self._act(decision, sub)
-        # 3) 汇总：让模型基于全程记忆给最终答案
+        if not steps:
+            return ask(f"基于以上，回答用户原问题：{query}", system="你是总结者。", temperature=0.2)
+
+        # 2) 并行执行：把每一步提交给线程池，动态扇出（CountDownLatch 思想）
+        results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(steps)) as ex:
+            futs = {ex.submit(self._run_step, i, step, query): i
+                    for i, step in enumerate(steps, 1)}
+            for fut in concurrent.futures.as_completed(futs):
+                i = futs[fut]
+                try:
+                    results[i] = fut.result()
+                except Exception as e:
+                    results[i] = f"[第{i}步异常] {e}"
+
+        # 3) 合并：按步骤顺序把各子步结果写回总记忆
+        for i in sorted(results):
+            self.memory.append({"role": "tool", "content": f"第{i}步结果：{results[i]}"})
+
+        # 4) 汇总：让模型基于全程记忆给最终答案
         return ask(f"基于以上执行过程，回答用户原问题：{query}",
                    system="你是总结者，给出最终结论。", temperature=0.2)
 
