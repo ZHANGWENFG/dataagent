@@ -44,6 +44,18 @@ def run_diagnose(question: str) -> dict:
     return {"insights": res["insights"], "conclusion": res["conclusion"]}
 
 
+def run_deep_search(question: str) -> dict:
+    """
+    深度搜索：顺序多步推理闭环（拆解→逐步检索证据→反思→综合）。
+    返回 {steps, evidence, answer, rounds}：
+      - steps   ：每一步"子问题→工具→证据"记录
+      - answer  ：综合后的最终答案
+    """
+    build()
+    from deep_search import deep_search   # 懒加载，避免离线 import app 时连带触发重型依赖
+    return deep_search(question)
+
+
 # ---------------- 界面（只在 streamlit run 时执行）----------------
 def main():
     st.set_page_config(page_title="simple_data_agent 演示", layout="wide")
@@ -56,7 +68,7 @@ def main():
             "运行前请先 `export OPENAI_API_KEY=xxx`。"
         )
 
-    tab1, tab2 = st.tabs(["🔎 智能问数 (NL2SQL)", "🩺 诊断分析"])
+    tab1, tab2, tab3 = st.tabs(["🔎 智能问数 (NL2SQL)", "🩺 诊断分析", "🧠 深度搜索 (DeepSearch)"])
 
     # 标签页 1：自然语言问数
     with tab1:
@@ -94,6 +106,25 @@ def main():
             st.write(out["insights"])
             st.subheader("业务结论")
             st.write(out["conclusion"])
+
+    # 标签页 3：深度搜索（顺序多步推理闭环）
+    with tab3:
+        st.caption("问'深度/根因/综合'，系统会拆解子问题→逐步调工具拿证据→反思是否够→综合答案（区别于并行扇出）。")
+        s = st.text_input(
+            "你想深度调研什么",
+            value="深度分析一下最近销售额下滑的根因是什么？",
+            key="s_input",
+        )
+        if st.button("深度搜索", key="s_btn") and s.strip():
+            with st.spinner("正在拆解并逐步检索证据…"):
+                out = run_deep_search(s)
+            st.subheader(f"检索过程（共 {len(out['steps'])} 步，{out['rounds']} 轮）")
+            for i, step in enumerate(out["steps"], 1):
+                st.markdown(f"**{i}. {step['sub']}**")
+                st.caption(f"→ 调用工具 `{step['tool']}`，参数：{step['arg']}")
+                st.text(step["result"])
+            st.subheader("综合答案")
+            st.write(out["answer"])
 
 
 if __name__ == "__main__":

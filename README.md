@@ -9,7 +9,7 @@
 |---|---|---|
 | 智能问数 NL2SQL | `nl2sql.py` + `table_rag.py` + `embeddings.py` | **混合召回**（BM25 关键词 + Qdrant 向量，RRF 融合）+ **LLM rerank 精排** 两阶段选表选字段（`:memory:` 免起服务）+ NL2SQL 三段式 + **自检/反思循环**（SQL 跑挂自动改 SQL 重试） |
 | 诊断分析 归因 | `diagnose.py` | 趋势/异常/周期/相关性量化 + LLM 讲成人话 |
-| 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + **Planning 并行扇出**(ThreadPoolExecutor) + Orchestrator 路由 |
+| 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + **Planning 并行扇出**(ThreadPoolExecutor) + **DeepSearch 顺序多步推理闭环** + Orchestrator 三级路由 |
 | MCP + Skills 接入 | `tools.py` + `skills.py` + `mcp_server.py` | BaseTool 可插拔 + **真·MCP Server**（FastMCP 暴露 query_data/diagnose，stdio 真调用）+ SKILL.md 技能系统 |
 
 **砍掉了**：AWEL 图引擎、GraphRAG、微调 Hub、多数据库连接器、管理后台——这些对"看懂+简历"是负担。
@@ -29,8 +29,9 @@ simple_data_agent/
 ├── tools.py         # 工具系统：BaseTool + 内置工具 + 真·MCP 客户端 + MCPTool
 ├── mcp_server.py    # 真·MCP Server（FastMCP）：暴露 query_data / diagnose 工具
 ├── skills.py        # 技能系统：扫描 skills/*.md 并按问题路由
-├── agent.py         # harness：BaseAgent / ReAct / Planning / Orchestrator
-├── app.py           # Streamlit 可视化界面（智能问数 + 诊断分析两个标签页，简历演示用）
+├── agent.py         # harness：BaseAgent / ReAct / Planning / DeepSearch / Orchestrator
+├── deep_search.py   # 深度搜索：顺序多步推理闭环（拆解→逐步检索证据→反思→综合），区别于 Planning 并行扇出
+├── app.py           # Streamlit 可视化界面（智能问数 + 诊断分析 + 深度搜索三个标签页，简历演示用）
 ├── eval.py          # 离线评测集：固定问题量化"选表准确率 / SQL 可执行率"
 ├── main.py          # 命令行入口
 ├── skills/
@@ -78,3 +79,4 @@ python main.py "上月哪个城市销售额最高？"
 - ✅ 新增 **Streamlit 可视化界面**（`app.py`）：智能问数 + 诊断分析两个标签页，业务逻辑(run_query/run_diagnose)与界面分离便于单测；没 key 时界面照常打开并弹提示。SQL 执行抽成 `sql_exec.py` 由 mcp_server/tools/app 共用
 - ✅ 新增 **离线评测集**（`eval.py`）：固定 7 道问数题，离线量化"选表准确率 / SQL 可执行率"（无需 LLM key）；设了 `OPENAI_API_KEY` 自动切换真实 NL2SQL 评测。本次实测 选表 7/7、可执行 7/7
 - ✅ 新增 **GitHub Actions CI**（`.github/workflows/ci.yml`）：push/PR 自动装依赖 → py_compile 语法检查 → 全模块 import 检查 → 跑 `eval.py` 离线评测（无需密钥），保证改动不破坏主链路
+- ✅ 新增 **DeepSearch 深度搜索**（`deep_search.py` + `agent.py` 的 `DeepSearchAgent` + `app.py` 第三个标签页）：顺序多步推理闭环——拆解子问题→逐步调工具拿证据→反思证据够不够→综合答案；区别于 PlanningAgent 的并行扇出，更贴近人做调研；Orchestrator 三级路由（深度/根因/综合→DeepSearch，分析→Planning，查数→ReAct）

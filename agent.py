@@ -16,6 +16,7 @@ import concurrent.futures
 from llm import ask
 from tools import ToolCollection
 from skills import SKILLS, pick_skill
+from deep_search import deep_search
 
 
 class BaseAgent:
@@ -124,11 +125,25 @@ class PlanningAgent(BaseAgent):
                    system="你是总结者，给出最终结论。", temperature=0.2)
 
 
+class DeepSearchAgent(BaseAgent):
+    """
+    深度搜索 Agent：顺序多步推理闭环（对标 joyagent 的 deepsearch.py）。
+    和 PlanningAgent 的区别：Planning 是并行扇出一把跑完再汇总；
+    DeepSearch 是顺序闭环，每步都能"看前面证据再决定下一步查啥"，更像人做调研。
+    """
+
+    def run(self, query: str) -> str:
+        self.memory.append({"role": "user", "content": query})
+        res = deep_search(query)
+        self.memory.append({"role": "assistant", "content": res["answer"]})
+        return res["answer"]
+
+
 class Orchestrator:
     """
     总调度（对标 joyagent 的 AgentHandlerFactory）：
     1) 先按 Skill 路由，把相关技能说明注入上下文（这就是'技能系统'生效的地方）
-    2) 再按问题类型选 Agent 模式：查数→ReAct，分析→Planning
+    2) 再按问题类型选 Agent 模式：深度/根因→DeepSearch，分析→Planning，查数→ReAct
     """
 
     def __init__(self):
@@ -139,8 +154,11 @@ class Orchestrator:
         skill = pick_skill(query, SKILLS)
         skill_hint = f"\n[参考技能]\n{skill}\n" if skill else ""
 
-        # —— 模式选择：含'分析/为什么/原因/异常'→规划模式，否则 ReAct ——
-        if any(k in query for k in ["分析", "为什么", "原因", "异常", "诊断"]):
+        # —— 模式选择：三级路由 ——
+        if any(k in query for k in ["深度", "根因", "综合", "调研"]):
+            agent = DeepSearchAgent(self.tools)
+            mode = "DeepSearch"
+        elif any(k in query for k in ["分析", "为什么", "原因", "异常", "诊断"]):
             agent = PlanningAgent(self.tools)
             mode = "Plan-and-Execute"
         else:
