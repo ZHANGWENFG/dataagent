@@ -16,7 +16,7 @@ import pandas as pd
 from mcp.server.fastmcp import FastMCP
 
 from db import build, DB_PATH
-from nl2sql import nl2sql
+from nl2sql import nl2sql, nl2sql_self_correct
 from diagnose import analyze
 
 mcp = FastMCP("simple-data-agent")
@@ -36,11 +36,11 @@ def _run_sql(sql: str) -> str:
 def query_data(question: str) -> str:
     """把自然语言问题转成 SQL 并在销售库上执行，返回查询结果。用于'查数据/问数'类问题。"""
     build()  # 确保示例库存在
-    plan = nl2sql(question)
-    try:
-        return f"[生成的SQL]\n{plan['sql']}\n[执行结果]\n{_run_sql(plan['sql'])}"
-    except Exception as e:
-        return f"[SQL]\n{plan['sql']}\n[执行出错] {e}"
+    # 用带"自检/反思"的入口：SQL 跑挂了会自动让 LLM 改 SQL 重试
+    plan = nl2sql_self_correct(question, execute_fn=_run_sql)
+    if plan["error"]:
+        return f"[SQL]\n{plan['sql']}\n[执行出错] {plan['error']}"
+    return f"[生成的SQL]\n{plan['sql']}\n[执行结果]\n{plan['result']}"
 
 
 @mcp.tool()

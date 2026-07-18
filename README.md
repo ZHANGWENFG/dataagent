@@ -7,7 +7,7 @@
 
 | 能力 | 对应文件 | 说明 |
 |---|---|---|
-| 智能问数 NL2SQL | `nl2sql.py` + `table_rag.py` + `embeddings.py` | **混合召回**（BM25 关键词 + Qdrant 向量，RRF 融合）+ **LLM rerank 精排** 两阶段选表选字段（`:memory:` 免起服务）+ NL2SQL 三段式 |
+| 智能问数 NL2SQL | `nl2sql.py` + `table_rag.py` + `embeddings.py` | **混合召回**（BM25 关键词 + Qdrant 向量，RRF 融合）+ **LLM rerank 精排** 两阶段选表选字段（`:memory:` 免起服务）+ NL2SQL 三段式 + **自检/反思循环**（SQL 跑挂自动改 SQL 重试） |
 | 诊断分析 归因 | `diagnose.py` | 趋势/异常/周期/相关性量化 + LLM 讲成人话 |
 | 多 Agent 编排 harness | `agent.py` | BaseAgent + ReAct + **Planning 并行扇出**(ThreadPoolExecutor) + Orchestrator 路由 |
 | MCP + Skills 接入 | `tools.py` + `skills.py` + `mcp_server.py` | BaseTool 可插拔 + **真·MCP Server**（FastMCP 暴露 query_data/diagnose，stdio 真调用）+ SKILL.md 技能系统 |
@@ -23,7 +23,7 @@ simple_data_agent/
 ├── embeddings.py    # 文本向量化：OpenAIEmbedder 真语义向量 + LocalHashEmbedder 离线兜底
 ├── db.py            # 生成确定性示例数据库（电商销售，含趋势+异常）
 ├── table_rag.py     # 两阶段选表 + 选字段（BM25+Qdrant 混合召回 + RRF 融合 + LLM rerank 精排，:memory: 免起服务）
-├── nl2sql.py        # NL2SQL 三段式
+├── nl2sql.py        # NL2SQL 三段式 + 自检/反思循环（跑挂自动改 SQL 重试）
 ├── diagnose.py      # 诊断归因（pandas 量化 + LLM 叙述）
 ├── tools.py         # 工具系统：BaseTool + 内置工具 + 真·MCP 客户端 + MCPTool
 ├── mcp_server.py    # 真·MCP Server（FastMCP）：暴露 query_data / diagnose 工具
@@ -71,7 +71,7 @@ python main.py "上月哪个城市销售额最高？"
 - ✅ 混合召回之后再加一层 **LLM rerank 精排**：向量+BM25 负责"捞得全"，LLM 负责"排得准"；没配 key / 调用失败自动退回融合顺序，离线零依赖不崩
 
 ## 后续还能加（已规划，按需递进）
-- ⬜ `nl2sql.py` 加 **NL2SQL 自检/反思循环**：生成 SQL → 执行 → 报错或空结果则让 LLM 自我修正（对齐 joyagent 的 self-correction）
+- ✅ `nl2sql.py` 已加 **NL2SQL 自检/反思循环**：生成 SQL → 执行 → 报错则把错误回喂 LLM 改 SQL 再试（对齐 joyagent 的 self-correction）；没 key 自动跳过重试，离线零依赖不崩
 - ⬜ 加 **Streamlit 可视化界面**：把问数/诊断做成网页，简历演示更直观
 - ⬜ 加 **eval 评测集**：固定若干问题，量化"选表准确率 / SQL 可执行率"
 - ⬜ 加 **GitHub Actions CI**：push 时自动跑 import + 离线冒烟测试

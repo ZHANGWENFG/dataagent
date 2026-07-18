@@ -257,7 +257,7 @@ class TableRAG:
             fused = _rrf([vec_rank, bm25_rank])
             ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)
             # 融合之后，再让 LLM 精排一遍（没 key/失败则保持融合顺序）
-            items = [(col, _column_doc(table, meta, col, cols[col]))
+            items = [(col, _column_doc(table, SCHEMA_REGISTRY[table], col, cols[col]))
                      for col, _ in ranked]
             ordered = self._llm_rerank(query, items)
             kept = ordered[:]

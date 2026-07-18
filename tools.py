@@ -14,7 +14,7 @@ import sqlite3
 import requests
 from abc import ABC, abstractmethod
 from db import DB_PATH
-from nl2sql import nl2sql
+from nl2sql import nl2sql, nl2sql_self_correct
 from diagnose import analyze
 
 # 真·MCP 客户端（装了 mcp 才可用；没装不影响本地工具与 HTTP 版 MCPTool）
@@ -45,22 +45,21 @@ class DataQueryTool(BaseTool):
     params = {"query": "用户的自然语言问题，例如'上月销售额最高的是哪个商品'"}
 
     def run(self, query: str = "", **kwargs) -> str:
-        plan = nl2sql(query)                       # 三段式生成 SQL
-        sql = plan["sql"]
-        try:
+        def _exec(sql: str) -> str:
+            """真实执行 SQL：成功返回结果文本，失败抛异常（交给自检循环修正）。"""
+            import pandas as pd
             conn = sqlite3.connect(DB_PATH)
-            rows = pd_read(sql, conn)              # 执行真实 SQL
-            conn.close()
-            return f"[生成的SQL]\n{sql}\n[执行结果]\n{rows}"
-        except Exception as e:
-            return f"[SQL]\n{sql}\n[执行出错] {e}（可把错误回喂给模型重试）"
+            try:
+                df = pd.read_sql_query(sql, conn)
+                return df.to_string(index=False) if not df.empty else "（无数据）"
+            finally:
+                conn.close()
 
-
-def pd_read(sql, conn) -> str:
-    """用 pandas 跑 SQL 并转成易读文本（避免把整个 DataFrame 塞给模型）。"""
-    import pandas as pd
-    df = pd.read_sql_query(sql, conn)
-    return df.to_string(index=False) if not df.empty else "（无数据）"
+        # 用带"自检/反思"的入口：SQL 跑挂了会自动让 LLM 改 SQL 重试
+        plan = nl2sql_self_correct(query, execute_fn=_exec)
+        if plan["error"]:
+            return f"[SQL]\n{plan['sql']}\n[执行出错] {plan['error']}"
+        return f"[生成的SQL]\n{plan['sql']}\n[执行结果]\n{plan['result']}"
 
 
 # ---------------- 内置工具 2：诊断分析 ----------------
